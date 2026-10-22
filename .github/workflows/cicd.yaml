@@ -1,0 +1,116 @@
+name: CI/CD to EC2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Frontend/**'
+      - 'Portregistration/**'
+      - 'Backend/**'
+      - 'Navbox/**'
+      - 'docker-compose.yaml'
+      - 'Frontend/Dockerfile'
+      - 'Portregistration/Dockerfile'
+      - 'Backend/Dockerfile'
+      - 'Backend/config/application-docker.properties'
+      - '.github/workflows/**'
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Frontend/**'
+      - 'Portregistration/**'
+      - 'Backend/**'
+      - 'Navbox/**'
+      - 'docker-compose.yaml'
+      - 'Frontend/Dockerfile'
+      - 'Portregistration/Dockerfile'
+      - 'Backend/Dockerfile'
+      - 'Backend/config/application-docker.properties'
+      - '.github/workflows/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Frontend image
+        run: docker build -t communication-test-frontend:latest ./Frontend
+
+      - name: Build Portregistration image
+        run: docker build -t communication-test-portregistration:latest ./Portregistration
+
+      - name: Build Backend image
+        run: docker build -t communication-test-backend:latest ./Backend
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key
+          chmod 600 ec2_key
+
+      - name: SSH into EC2 and deploy
+        run: |
+          ssh -i ec2_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+
+            cd /home/${{ secrets.EC2_USER }}
+
+            # Remove folder if exists and is not a git repo
+            if [ -d "communication-test" ]; then
+              if [ ! -d "communication-test/.git" ]; then
+                rm -rf communication-test
+              fi
+            fi
+
+            # Clone or update the repo
+            if [ ! -d "communication-test/.git" ]; then
+              git clone https://github.com/${{ github.repository }}.git communication-test
+            else
+              cd communication-test
+              git fetch --all
+              git reset --hard origin/main
+              cd ..
+            fi
+
+            cd communication-test
+
+            # Inject docker-compose file from secret
+            printf "%s" "${{ secrets.DOCKER_COMPOSE }}" > docker-compose.yaml
+            chmod 600 docker-compose.yaml
+
+            # Validate docker-compose.yaml is not empty
+            if [ ! -s docker-compose.yaml ]; then
+              echo "ERROR: docker-compose.yaml is empty or missing."
+              exit 1
+            fi
+
+            # Stop and remove running containers
+            docker compose down
+
+            # Start containers with build
+            docker compose up --build -d
+
+            # Clean up unused Docker images and containers
+            docker system prune -a -f
+          EOF
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f ec2_key

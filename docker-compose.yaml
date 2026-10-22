@@ -1,0 +1,134 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: communication-test-mysql
+
+    environment:
+      MYSQL_DATABASE: aioceaneye
+      MYSQL_ROOT_PASSWORD: root
+
+    ports:
+      - "3306:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+    networks:
+      - testmdt-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+
+    ports:
+      - "8080:8080"
+      - "14000-14050:14000-14050/udp"
+      - "15000-15050:15000-15050/udp"
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/aioceaneye?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+      SPRING_DATASOURCE_USERNAME: "root"
+      SPRING_DATASOURCE_PASSWORD: "root"
+
+      SPRING_PROFILES_ACTIVE: "prod"
+
+      SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
+      SPRING_JPA_PROPERTIES_HIBERNATE_SHOW_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+      SPRING_JPA_DEFER_DATASOURCE_INITIALIZATION: "true"
+      SPRING_SQL_INIT_MODE: "always"
+
+      CLOUD_AWS_REGION_STATIC: "ap-northeast-2"
+
+      CLOUD_AWS_CREDENTIALS_ACCESS_KEY: "${CLOUD_AWS_CREDENTIALS_ACCESS_KEY}"
+      CLOUD_AWS_CREDENTIALS_SECRET_KEY: "${CLOUD_AWS_CREDENTIALS_SECRET_KEY}"
+
+      CLOUD_AWS_S3_BUCKET_NAME: "mdt-mmteam-teledata-log-bucket"
+
+    networks:
+      - testmdt-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ports/list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+
+  portregistration:
+    build:
+      context: ./Portregistration
+      dockerfile: Dockerfile
+
+    ports:
+      - "81:81"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    networks:
+      - testmdt-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:81"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+
+    ports:
+      - "80:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+      portregistration:
+        condition: service_healthy
+
+    networks:
+      - testmdt-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+
+volumes:
+  mysql_data:
+
+
+networks:
+  testmdt-network:
+    driver: bridge
